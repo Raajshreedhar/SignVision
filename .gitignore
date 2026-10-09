@@ -5,3 +5,9 @@ __pycache__/
 .DS_Store
 data/
 asl_alphabet_*/
+.agents/
+runs/
+*.pt
+datasets/
+.pytest_cache/
+.venv312/

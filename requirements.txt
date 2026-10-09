@@ -5,3 +5,5 @@ numpy==2.5.3
 pillow
 kagglehub
 tqdm
+ultralytics==8.4.174
+pytest==9.1.1
