@@ -102,16 +102,22 @@ def convert_pose_line(line):
 
 
 def _read_hk_split(hk_root, split):
-    """Convert one split's labels in memory: ([(image, [box lines])], stats)."""
+    """Convert one split's labels in memory: ([(image, [box lines])], stats).
+
+    An image without a label file is kept as a background (empty label). An
+    image with a dropped line is left out: its hand would otherwise be
+    labeled as background.
+    """
     img_dir = hk_root / "images" / split
     lbl_dir = hk_root / "labels" / split
     if not img_dir.is_dir():
         raise HandDataError(f"hand_keypoints: {img_dir} is missing")
     items = []
-    lines = dropped = unlabeled = 0
+    lines = dropped = unlabeled = skipped = 0
     for image in sorted(p for p in img_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES):
         label = lbl_dir / f"{image.stem}.txt"
         boxes = []
+        image_dropped = 0
         if label.is_file():
             for raw in label.read_text().splitlines():
                 if not raw.strip():
@@ -119,11 +125,15 @@ def _read_hk_split(hk_root, split):
                 lines += 1
                 converted = convert_pose_line(raw)
                 if converted is None:
-                    dropped += 1
+                    image_dropped += 1
                 else:
                     boxes.append(converted)
         else:
-            unlabeled += 1  # kept as a background image with an empty label
+            unlabeled += 1
+        dropped += image_dropped
+        if image_dropped:
+            skipped += 1
+            continue
         items.append((image, boxes))
     if lines == 0:
         raise HandDataError(f"hand_keypoints {split}: no label lines found under {lbl_dir}")
@@ -137,6 +147,7 @@ def _read_hk_split(hk_root, split):
         "boxes": sum(len(b) for _, b in items),
         "label_lines": lines,
         "dropped_lines": dropped,
+        "skipped_images": skipped,
         "unlabeled_images": unlabeled,
     }
     return items, stats

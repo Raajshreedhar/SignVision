@@ -182,7 +182,11 @@ def test_bad_line_is_dropped_and_counted(tmp_path):
     assert train["dropped_lines"] == 1
     assert train["label_lines"] == 150
     assert train["boxes"] == 149
-    assert train["images"] == 150
+    # the image whose only line was dropped is left out instead of becoming a false background
+    assert train["skipped_images"] == 1
+    assert train["images"] == 149
+    assert not (config.HAND_DET_DIR / "images" / "train" / "hand_keypoints__IMG_train_0000.jpg").exists()
+    assert (config.HAND_DET_DIR / "images" / "train" / "hand_keypoints__IMG_train_0001.jpg").exists()
 
 
 def test_more_than_one_percent_bad_lines_aborts(tmp_path, capsys):
