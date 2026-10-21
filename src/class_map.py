@@ -20,6 +20,7 @@ from pathlib import Path
 from src.config import CLASSES, NUM_CLASSES
 
 MIN_CLASS_FOLDERS = 20
+MAX_DIFF_LINES = 10  # mismatched entries shown in a ClassOrderError
 
 # Lowercased folder names (beyond single letters) that map onto control classes.
 ALIASES = {
@@ -130,11 +131,15 @@ def decode_class_names(names):
     problems = []
     if len(got) != NUM_CLASSES:
         problems.append(f"expected {NUM_CLASSES} classes, got {len(got)}")
+    diffs = []
     for i in range(max(len(got), NUM_CLASSES)):
         want = CLASS_DIRS[i] if i < NUM_CLASSES else "<none>"
         have = got[i] if i < len(got) else "<missing>"
         if have != want:
-            problems.append(f"  index {i}: expected {want!r}, got {have!r}")
+            diffs.append(f"  index {i}: expected {want!r}, got {have!r}")
+    problems += diffs[:MAX_DIFF_LINES]
+    if len(diffs) > MAX_DIFF_LINES:
+        problems.append(f"  ... and {len(diffs) - MAX_DIFF_LINES} more mismatched entries")
     if problems:
         raise ClassOrderError("class names do not follow the canonical NN_LABEL order:\n" + "\n".join(problems))
     return [name.split("_", 1)[1] for name in got]

@@ -151,6 +151,15 @@ def test_decode_rejects_renamed_entry():
         decode_class_names(names)
 
 
+def test_decode_diff_is_capped_for_a_foreign_model():
+    with pytest.raises(ClassOrderError) as exc:
+        decode_class_names({i: f"imagenet_{i}" for i in range(1000)})
+    message = str(exc.value)
+    assert "expected 29 classes, got 1000" in message
+    assert "... and 990 more mismatched entries" in message
+    assert len(message.splitlines()) <= 13
+
+
 def test_decode_rejects_gapped_keys():
     names = {i: class_dir_name(i) for i in range(NUM_CLASSES)}
     names[29] = names.pop(0)
