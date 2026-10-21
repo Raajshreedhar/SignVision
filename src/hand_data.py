@@ -9,6 +9,11 @@ Detector sources, read from data/sources.json:
     xywh boxes become cx cy w h (clipped to the image); train/val is split by
     a sha1 hash of the user id, so one person never lands in both splits.
 
+Without HaGRID (no Kaggle credentials, or a schema error) the build adds
+zoom-out composites instead: hand-keypoints images pasted small, anywhere on a
+wide 960x540 canvas, so the detector still learns camera-wide placement.
+stats.json then records webcam_view_source=false and a WARNING is printed.
+
 Output, deleted and rebuilt on every run so stale files never mix in:
   data/hand_det/images/{train,val}/<source>__<stem>.jpg
   data/hand_det/labels/{train,val}/<source>__<stem>.txt
@@ -23,11 +28,15 @@ import argparse
 import hashlib
 import json
 import math
+import random
 import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 from src import config
 from src.cli import float_range
@@ -215,6 +224,134 @@ def _write_hagrid(records, val_frac, out_dir):
     return stats
 
 
+# --- zoom-out composites (fallback when HaGRID is unavailable) ---------------
+
+
+def composite_warning(reason, n_composites):
+    return (
+        f"WARNING: hagrid30k unavailable ({reason}); detector data = hand-keypoints close-ups + "
+        f"{n_composites} zoom-out composites. Camera-wide detection will be weaker; add Kaggle credentials "
+        "and re-run src.download_data --sources hagrid30k."
+    )
+
+
+def nothing_backgrounds(paths):
+    """Sorted grassknoted nothing/ images (empty scenes), or [] if grassknoted is not cached."""
+    root = paths.get("grassknoted")
+    if root is None:
+        return []
+    folder = Path(root) / REGISTRY["grassknoted"].class_root / "nothing"
+    if not folder.is_dir():
+        return []
+    return sorted(p for p in folder.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+
+
+def transform_box(box, paste, canvas):
+    """Map a (cx, cy, w, h) box normalized to the pasted image onto the canvas.
+
+    paste = (x, y, w, h) of the pasted image in canvas pixels; canvas = (W, H).
+    """
+    cx, cy, w, h = box
+    ox, oy, pw, ph = paste
+    cw, ch = canvas
+    return ((ox + cx * pw) / cw, (oy + cy * ph) / ch, w * pw / cw, h * ph / ch)
+
+
+def _parse_box(line):
+    return tuple(float(v) for v in line.split()[1:5])
+
+
+def _imread(path):
+    image = cv2.imread(str(path))
+    if image is None:
+        raise HandDataError(f"unreadable image {path}")
+    return image
+
+
+def _cover_resize(image, width, height):
+    """Scale ``image`` to cover width x height, then center-crop."""
+    h, w = image.shape[:2]
+    scale = max(width / w, height / h)
+    new_w, new_h = max(width, math.ceil(w * scale)), max(height, math.ceil(h * scale))
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    x0, y0 = (new_w - width) // 2, (new_h - height) // 2
+    return resized[y0:y0 + height, x0:x0 + width].copy()
+
+
+def _gradient_background(rng, width, height):
+    """Random two-color linear gradient plus Gaussian noise (sigma 8)."""
+    c1 = np.array([rng.randrange(256) for _ in range(3)], np.float32)
+    c2 = np.array([rng.randrange(256) for _ in range(3)], np.float32)
+    angle = rng.uniform(0.0, 2 * math.pi)
+    xs = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
+    ys = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
+    t = xs * math.cos(angle) + ys * math.sin(angle)
+    t = (t - t.min()) / max(float(t.max() - t.min()), 1e-6)
+    image = c1 + (c2 - c1) * t[..., None]
+    noise = np.random.default_rng(rng.randrange(2**32)).normal(0.0, 8.0, image.shape)
+    return np.clip(image + noise, 0, 255).astype(np.uint8)
+
+
+def _draw_sources(pool, k, rng):
+    """k items from shuffled passes over the sorted pool (no repeats until it is used up)."""
+    drawn = []
+    while len(drawn) < k:
+        order = list(pool)
+        rng.shuffle(order)
+        drawn.extend(order[: k - len(drawn)])
+    return drawn
+
+
+def make_composites(train_items, val_items, out_dir, backgrounds, seed=None):
+    """Write zoom-out composites into out_dir; return their counts.
+
+    Train composites come only from hand-keypoints train images and val
+    composites only from val images, so the splits stay disjoint. One
+    random.Random(seed) drives every choice: the same inputs and seed give the
+    same files. Backgrounds: a grassknoted nothing/ image with p=0.7 (when
+    available), otherwise a gradient.
+    """
+    rng = random.Random(config.SEED if seed is None else seed)
+    canvas_w, canvas_h = config.COMPOSITE_CANVAS
+    scale_lo, scale_hi = config.COMPOSITE_SCALE
+    counts = {"train": 0, "val": 0, "bg_nothing": 0, "bg_gradient": 0}
+    index = 0
+    plan = (
+        ("train", train_items, config.ZOOMOUT_COMPOSITES_TRAIN),
+        ("val", val_items, config.ZOOMOUT_COMPOSITES_VAL),
+    )
+    for split, items, n in plan:
+        pool = [(image, lines) for image, lines in items if lines]
+        if n > 0 and not pool:
+            raise HandDataError(f"no labeled hand_keypoints {split} images to build composites from")
+        for image, lines in _draw_sources(pool, n, rng):
+            if backgrounds and rng.random() < 0.7:
+                canvas = _cover_resize(_imread(rng.choice(backgrounds)), canvas_w, canvas_h)
+                counts["bg_nothing"] += 1
+            else:
+                canvas = _gradient_background(rng, canvas_w, canvas_h)
+                counts["bg_gradient"] += 1
+
+            hand = _imread(image)
+            h0, w0 = hand.shape[:2]
+            scale = rng.uniform(scale_lo, scale_hi) * canvas_w / w0
+            scale = min(scale, canvas_h / h0)  # keep the aspect ratio and fit inside the canvas
+            new_w = min(canvas_w, max(1, round(w0 * scale)))
+            new_h = min(canvas_h, max(1, round(h0 * scale)))
+            hand = cv2.resize(hand, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            ox, oy = rng.randint(0, canvas_w - new_w), rng.randint(0, canvas_h - new_h)
+            canvas[oy:oy + new_h, ox:ox + new_w] = hand
+
+            boxes = [transform_box(_parse_box(ln), (ox, oy, new_w, new_h), (canvas_w, canvas_h)) for ln in lines]
+            stem = f"composite__{index:05d}"
+            if not cv2.imwrite(str(out_dir / "images" / split / f"{stem}.jpg"), canvas):
+                raise HandDataError(f"failed to write composite {stem}.jpg")
+            (out_dir / "labels" / split / f"{stem}.txt").write_text("".join(f"{_box_line(b)}\n" for b in boxes))
+            counts[split] += 1
+            index += 1
+    return counts
+
+
 # --- output -----------------------------------------------------------------
 
 
@@ -289,7 +426,11 @@ def build(sources, val_frac, out_dir=None, sources_file=None):
     if hagrid_records is not None:
         per_source[HAGRID] = _write_hagrid(hagrid_records, val_frac, out_dir)
 
-    composites = {"train": 0, "val": 0, "bg_nothing": 0, "bg_gradient": 0}
+    if hagrid_records is None:
+        composites = make_composites(hk_items["train"], hk_items["val"], out_dir, nothing_backgrounds(paths))
+        print(composite_warning(hagrid_reason, composites["train"] + composites["val"]), file=sys.stderr)
+    else:
+        composites = {"train": 0, "val": 0, "bg_nothing": 0, "bg_gradient": 0}
 
     _write_yaml(out_dir)
     stats = {
