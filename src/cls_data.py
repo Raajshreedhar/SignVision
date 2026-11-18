@@ -17,8 +17,9 @@ preprocess.classifier_input, so training crops look exactly like live crops:
      square (counted per source as "fallback"); a NOTHING image uses the
      detector crop when the detector fired (a false positive the classifier
      must reject), else a seeded random square of 50-100% of the short side;
-  7. NOTHING_BG_CROPS HaGRID background squares (15-40% of the short side,
-     IoU < 0.05 with every annotated hand) are added to NOTHING;
+  7. NOTHING_BG_CROPS HaGRID background squares (15-40% of the short side)
+     are added to NOTHING; each overlaps every annotated hand by less than
+     5% of the smaller box, which implies IoU < 0.05;
   8. a stratified CLS_VAL_SPLIT split by class (at least one image per split
      per class), crops written as PNG to
      data/cls/{train,val}/<class_dir_name>/<source>__<stem>.png;
@@ -70,7 +71,7 @@ from src.config import (
 )
 from src.download_data import REGISTRY, read_sources, sources_arg
 from src.preprocess import classifier_input
-from src.tracking import best_detection, iou
+from src.tracking import best_detection
 
 SOURCE_ORDER = ("grassknoted", "debashishsau", "ayuraj")
 REQUIRED = "grassknoted"
@@ -257,8 +258,25 @@ def random_square(rng, height, width, scale):
     return (x1, y1, x1 + side, y1 + side)
 
 
+def is_hand_free(square, hands):
+    """True when ``square`` overlaps every hand box by less than BG_MAX_IOU of the smaller box.
+
+    That implies IoU < BG_MAX_IOU, and it also rejects what a low IoU alone
+    lets through: a large square around a whole small hand, or a small square
+    inside a large hand box.
+    """
+    x1, y1, x2, y2 = square
+    square_area = (x2 - x1) * (y2 - y1)
+    for hx1, hy1, hx2, hy2 in hands:
+        inter = max(0.0, min(x2, hx2) - max(x1, hx1)) * max(0.0, min(y2, hy2) - max(y1, hy1))
+        hand_area = max(0.0, hx2 - hx1) * max(0.0, hy2 - hy1)
+        if inter > 0 and inter >= BG_MAX_IOU * min(square_area, hand_area):
+            return False
+    return True
+
+
 def plan_background_crops(records, n, seed=SEED):
-    """Up to n NOTHING items: one random square per HaGRID image with IoU < BG_MAX_IOU to every hand."""
+    """Up to n NOTHING items: one random hand-free square (is_hand_free) per HaGRID image."""
     rng = random.Random(seed)
     order = list(records)
     rng.shuffle(order)
@@ -273,7 +291,7 @@ def plan_background_crops(records, n, seed=SEED):
         hands = [(x * width, y * height, (x + w) * width, (y + h) * height) for x, y, w, h in rec.bboxes]
         for _ in range(BG_TRIES):
             square = random_square(rng, height, width, BG_SCALE)
-            if all(iou(square, hand) < BG_MAX_IOU for hand in hands):
+            if is_hand_free(square, hands):
                 planned.append(Item(Path(rec.image_path), "NOTHING", HAGRID, str(rec.image_id), box=square))
                 break
     return planned
