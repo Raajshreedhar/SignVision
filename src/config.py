@@ -1,10 +1,17 @@
 """Project configuration: the single source of truth for SignVision.
 
-CLASSES is the CANONICAL 29-element class ordering. Its index positions ARE the
-model's output class indices (model logit i corresponds to CLASSES[i]). This
-ordering MUST round-trip into every saved checkpoint: train.py stores CLASSES
-alongside the weights and app.py decodes argmax through that saved list, so the
-label mapping stays identical at train and inference time. Do NOT reorder.
+CLASSES is the CANONICAL 29-class order (A-Z, then SPACE, DELETE, NOTHING);
+index i is the letter classifier's output index i. Do NOT reorder.
+
+The order round-trips through the class folder names: src.cls_data writes
+class i to data/cls/{train,val}/<class_dir_name(i)> = f"{i:02d}_{CLASSES[i]}"
+(00_A ... 28_NOTHING), so the sorted folder names Ultralytics turns into class
+indices are already in canonical order. class_map.decode_class_names checks a
+trained model's names against that scheme when the classifier is saved and
+when it is loaded, and the classifier meta stores CLASSES as well.
+
+Filesystem paths are read from this module at call time (config.CLS_DIR, ...)
+so tests can monkeypatch them; numeric constants may be imported directly.
 """
 
 from pathlib import Path
@@ -15,42 +22,13 @@ CLASSES = [chr(ord("A") + i) for i in range(26)] + ["SPACE", "DELETE", "NOTHING"
 NUM_CLASSES = 29
 NOTHING_IDX = CLASSES.index("NOTHING")  # 28; use this instead of a literal index
 
-# Maps raw Kaggle dataset folder names to the canonical CLASSES labels.
-# The 26 letter folders ('A'..'Z') map to themselves; the control folders use
-# the dataset's lowercase names.
-FOLDER_TO_LABEL = {chr(ord("A") + i): chr(ord("A") + i) for i in range(26)}
-FOLDER_TO_LABEL.update(
-    {
-        "space": "SPACE",
-        "del": "DELETE",
-        "nothing": "NOTHING",
-    }
-)
-
-# --- Image preprocessing ---
-IMG_SIZE = 64  # frames/images are resized to IMG_SIZE x IMG_SIZE, 1-channel.
-
-# --- Paths ---
+# --- Project paths and seed ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = PROJECT_ROOT / "models"
-MODEL_PATH = MODELS_DIR / "signvision_cnn.pt"
-DATA_PATH_FILE = MODELS_DIR / "dataset_path.txt"
-
-# --- Training hyperparameters ---
-BATCH_SIZE = 128
-EPOCHS = 15
-LR = 1e-3
-VAL_SPLIT = 0.15
 SEED = 42
-
-# --- Live inference parameters ---
-# Square region-of-interest for the hand, as (x, y, w, h) in frame pixels.
-ROI_BOX = (300, 100, 300, 300)
 
 # =============================================================================
 # YOLO26 two-stage pipeline (hand detector -> letter classifier).
-# Added alongside the legacy constants above; the legacy CNN path keeps using
-# those until it is removed together with the app rewrite.
 # =============================================================================
 
 # --- Data and model artifact paths (all gitignored) ---

@@ -11,9 +11,6 @@ classifier_input chains the two. cls_data (training crops), the pipeline
 (live crops), the evaluator and the benchmark all call it, so the pixels the
 classifier sees are identical at train and inference time. Bump
 config.PREPROCESS_VERSION whenever preprocess_hand_crop changes.
-
-The legacy preprocess_frame (64x64 single-channel input of the old CNN) stays
-until the CNN path is removed; it shares the module-level CLAHE instance.
 """
 
 import math
@@ -22,7 +19,7 @@ import numbers
 import cv2
 import numpy as np
 
-from src.config import CLAHE_CLIP, CLAHE_TILE, CLS_IMGSZ, CROP_PAD, IMG_SIZE, MIN_CROP_PX
+from src.config import CLAHE_CLIP, CLAHE_TILE, CLS_IMGSZ, CROP_PAD, MIN_CROP_PX
 
 # One module-level CLAHE instance, reused for every call.
 _CLAHE = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=(CLAHE_TILE, CLAHE_TILE))
@@ -102,27 +99,3 @@ def classifier_input(img, box_xyxy, pad=CROP_PAD, size=CLS_IMGSZ):
     """Frame + hand box -> the uint8 (size, size, 3) image the letter classifier sees."""
     return preprocess_hand_crop(crop_square(img, box_xyxy, pad), size)
 
-
-def preprocess_frame(img):
-    """Convert a webcam frame or dataset image into model input.
-
-    Steps:
-      1. BGR -> grayscale if the image has 3 channels (pass through if already 2D).
-      2. Apply CLAHE on the 8-bit gray image for lighting-robust contrast.
-      3. Resize to (IMG_SIZE, IMG_SIZE) using INTER_AREA.
-      4. Normalize to float32 in [0, 1].
-
-    Returns a (1, IMG_SIZE, IMG_SIZE) float32 array (single channel first).
-    """
-    if img.ndim == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = img
-
-    # CLAHE expects an 8-bit single-channel image.
-    gray = _CLAHE.apply(gray)
-
-    resized = cv2.resize(gray, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
-
-    arr = resized.astype(np.float32) / 255.0
-    return arr.reshape(1, IMG_SIZE, IMG_SIZE)
