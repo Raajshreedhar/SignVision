@@ -1,10 +1,17 @@
 """Trainer guards: the M3 results.csv run-health check, --time mapping, CPU retry, pre-checks."""
 
+import json
+import shutil
+
 import pytest
 
 from src import config
+from src import train_classifier
 from src import train_detector
 from src import yolo_env
+from src.class_map import CLASS_DIRS
+
+REBUILD = "rebuild with python -m src.cls_data"
 
 DET_COLUMNS = [
     "train/box_loss", "train/cls_loss", "train/l1_loss",
@@ -120,6 +127,94 @@ def test_detector_precheck_exits_1_without_dataset(tmp_path, monkeypatch, capsys
         train_detector.main(["--model", "n"])
     assert exc.value.code == 1
     assert "src.hand_data" in capsys.readouterr().err
+
+
+def make_cls_tree(root, **stats_overrides):
+    """A minimal valid data/cls tree: 29 class folders per split with one file each, plus stats.json."""
+    for split in ("train", "val"):
+        for name in CLASS_DIRS:
+            folder = root / split / name
+            folder.mkdir(parents=True)
+            (folder / "x.png").write_bytes(b"png")
+    stats = {"preprocess_version": config.PREPROCESS_VERSION, "crop_pad": config.CROP_PAD,
+             "cls_imgsz": config.CLS_IMGSZ, "detector": {"path": "hand_detector.pt", "md5": "abc"}}
+    stats.update(stats_overrides)
+    (root / "stats.json").write_text(json.dumps(stats))
+    return root
+
+
+@pytest.fixture
+def cls_dir(tmp_path, monkeypatch):
+    root = tmp_path / "cls"
+    monkeypatch.setattr(config, "CLS_DIR", root)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    return root
+
+
+def run_classifier_main(argv, capsys):
+    with pytest.raises(SystemExit) as exc:
+        train_classifier.main(argv)
+    assert exc.value.code == 1
+    return capsys.readouterr().err
+
+
+def test_classifier_precheck_accepts_a_valid_tree(cls_dir):
+    make_cls_tree(cls_dir)
+    assert train_classifier.precheck(cls_dir, config.CLS_IMGSZ)["cls_imgsz"] == config.CLS_IMGSZ
+
+
+def test_classifier_missing_dataset_exits_1(cls_dir, capsys):
+    err = run_classifier_main(["--model", "n"], capsys)
+    assert REBUILD in err
+
+
+def test_classifier_pad_mismatch_exits_1(cls_dir, capsys):
+    make_cls_tree(cls_dir, crop_pad=0.3)
+    err = run_classifier_main(["--model", "n"], capsys)
+    assert REBUILD in err and "crop_pad 0.3" in err
+
+
+def test_classifier_imgsz_mismatch_exits_1(cls_dir, capsys):
+    make_cls_tree(cls_dir)
+    err = run_classifier_main(["--model", "n", "--imgsz", "256"], capsys)
+    assert REBUILD in err and "--imgsz 256" in err
+    shutil.rmtree(cls_dir)
+    make_cls_tree(cls_dir, cls_imgsz=192)  # default --imgsz 224 vs crops built at 192
+    assert REBUILD in run_classifier_main(["--model", "n"], capsys)
+
+
+def test_classifier_version_mismatch_exits_1(cls_dir, capsys):
+    make_cls_tree(cls_dir, preprocess_version="gray-clahe-v1")
+    err = run_classifier_main(["--model", "n"], capsys)
+    assert REBUILD in err and "gray-clahe-v1" in err
+
+
+def test_classifier_missing_class_dir_exits_1(cls_dir, capsys):
+    make_cls_tree(cls_dir)
+    shutil.rmtree(cls_dir / "val" / "27_DELETE")
+    err = run_classifier_main(["--model", "n"], capsys)
+    assert REBUILD in err and "27_DELETE" in err
+
+
+def test_classifier_extra_class_dir_exits_1(cls_dir, capsys):
+    make_cls_tree(cls_dir)
+    (cls_dir / "train" / "DELETE").mkdir()  # an unprefixed folder would shift the class order
+    err = run_classifier_main(["--model", "n"], capsys)
+    assert REBUILD in err and "unexpected ['DELETE']" in err
+
+
+def test_classifier_empty_train_class_exits_1(cls_dir, capsys):
+    make_cls_tree(cls_dir)
+    (cls_dir / "train" / "28_NOTHING" / "x.png").unlink()
+    (cls_dir / "train" / "28_NOTHING" / "notes.txt").write_text("not an image")
+    err = run_classifier_main(["--model", "n"], capsys)
+    assert REBUILD in err and "28_NOTHING" in err
+
+
+def test_classifier_resume_without_last_pt_exits_1(cls_dir, capsys):
+    make_cls_tree(cls_dir)
+    err = run_classifier_main(["--model", "n", "--resume", "--device", "cpu"], capsys)
+    assert "last.pt" in err and "letter_classifier_n" in err
 
 
 def test_detector_resume_without_last_pt_exits_1(tmp_path, monkeypatch, capsys):
