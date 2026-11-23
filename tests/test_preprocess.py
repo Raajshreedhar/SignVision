@@ -1,38 +1,16 @@
-"""Unit tests for src.preprocess: the legacy preprocess_frame and the shared classifier input.
+"""Unit tests for src.preprocess: the shared gray + CLAHE classifier input.
 
-Run: .venv/bin/python tests/test_preprocess.py
+Run: .venv/bin/python -m pytest tests/test_preprocess.py -q
 """
 
-import os
-import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 
-# Allow running directly (python tests/test_preprocess.py) by putting the
-# project root on sys.path.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.config import CLAHE_CLIP, CLAHE_TILE, CLS_IMGSZ, IMG_SIZE, PROJECT_ROOT
-from src.preprocess import classifier_input, crop_square, preprocess_frame, preprocess_hand_crop
-
-
-def test_color_input():
-    out = preprocess_frame(np.zeros((200, 200, 3), dtype=np.uint8))
-    assert out.dtype == np.float32, f"dtype was {out.dtype}"
-    assert out.shape == (1, IMG_SIZE, IMG_SIZE), f"shape was {out.shape}"
-    assert out.min() >= 0.0, f"min was {out.min()}"
-    assert out.max() <= 1.0, f"max was {out.max()}"
-
-
-def test_gray_input():
-    out = preprocess_frame(np.full((200, 200), 127, dtype=np.uint8))
-    assert out.dtype == np.float32, f"dtype was {out.dtype}"
-    assert out.shape == (1, IMG_SIZE, IMG_SIZE), f"shape was {out.shape}"
-    assert out.min() >= 0.0, f"min was {out.min()}"
-    assert out.max() <= 1.0, f"max was {out.max()}"
+from src.config import CLAHE_CLIP, CLAHE_TILE, CLS_IMGSZ, PROJECT_ROOT
+from src.preprocess import classifier_input, crop_square, preprocess_hand_crop
 
 
 # --- shared classifier input (preprocess_hand_crop / classifier_input) ---------------
@@ -122,8 +100,3 @@ def test_clahe_and_gray_conversion_only_in_preprocess():
     assert not offenders, offenders
     assert "createCLAHE" in (src / "preprocess.py").read_text(encoding="utf-8")
 
-
-if __name__ == "__main__":
-    test_color_input()
-    test_gray_input()
-    print("test_preprocess.py: all assertions passed")

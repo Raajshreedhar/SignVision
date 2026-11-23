@@ -13,8 +13,8 @@ import sys
 # Allow running directly by putting the project root on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.app import CommitStateMachine
 from src.config import CLASSES
+from src.state_machine import CommitStateMachine
 
 # Small, explicit timing so the sequences stay readable and deterministic.
 DEBOUNCE = 3

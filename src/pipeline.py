@@ -1,4 +1,4 @@
-"""Model wrappers for the two-stage pipeline (design section 7.1).
+"""The two-stage pipeline: model wrappers (design section 7.1) and SignPipeline (section 7.2).
 
 HandDetector wraps the stage-1 YOLO26 hand detector and returns
 tracking.Detection boxes. LetterClassifier wraps the stage-2 YOLO26-cls letter
@@ -7,19 +7,28 @@ model's class names must decode through class_map.decode_class_names, and the
 meta's classes and preprocess_version must equal config.CLASSES and
 config.PREPROCESS_VERSION.
 
-Ultralytics is imported lazily inside the constructors (through
-src.yolo_env), so importing this module stays light and pipeline tests can
-use fakes. Missing weights raise FileNotFoundError from yolo_env.load_yolo.
+SignPipeline runs one frame through detector -> HandSelector -> square crop of
+the raw chosen box -> classifier -> ProbSmoother and returns a FrameResult
+with the smoothed label and the per-stage timings. With no hand it skips the
+classifier and feeds a NOTHING one-hot to the smoother. It resets the smoother
+whenever a new track starts, so two hands' predictions never blend.
+
+Ultralytics (through src.yolo_env) and cv2 (through src.preprocess) are
+imported lazily inside the constructors, so importing this module stays light
+and pipeline tests can use fakes. Missing weights raise FileNotFoundError from
+yolo_env.load_yolo.
 """
 
 import json
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from src.class_map import CLASS_DIRS, ClassOrderError, decode_class_names
-from src.config import CLASSES, DET_CONF, DET_IMGSZ, DET_MAX_DET, PREPROCESS_VERSION
-from src.tracking import Detection
+from src.config import CLASSES, DET_CONF, DET_IMGSZ, DET_MAX_DET, NOTHING_IDX, NUM_CLASSES, PREPROCESS_VERSION
+from src.tracking import Detection, Selection
 
 REQUIRED_META_KEYS = ("classes", "class_dirs", "preprocess_version", "crop_pad", "imgsz", "detector_md5")
 
@@ -141,3 +150,65 @@ class LetterClassifier:
         """(29,) float32 class probabilities in config.CLASSES order for one preprocessed crop."""
         result = self.model.predict(img, imgsz=self.imgsz, device=self.device, verbose=False)[0]
         return result.probs.data.cpu().numpy().astype(np.float32)
+
+
+@dataclass
+class FrameResult:
+    """SignPipeline output for one frame."""
+
+    selection: Selection | None
+    probs_raw: np.ndarray  # (29,) classifier output, or the NOTHING one-hot when no hand was selected
+    probs_smoothed: np.ndarray  # (29,) window mean from the ProbSmoother
+    label: str  # argmax of probs_smoothed
+    conf: float  # probs_smoothed[label]
+    det_ms: float
+    cls_ms: float  # 0.0 when the classifier did not run
+    cls_ran: bool
+
+
+class SignPipeline:
+    """detector -> selector -> raw-box crop -> classifier -> smoother for one frame (design section 7.2).
+
+    The detector (detect(frame) -> list[Detection]), the classifier
+    (crop_pad, imgsz, classify(img) -> (29,) probabilities) and the clock are
+    duck-typed, so tests can pass fakes.
+    """
+
+    def __init__(self, detector, classifier, selector, smoother, clock=time.perf_counter):
+        from src.preprocess import classifier_input  # cv2: imported only when a pipeline is built
+
+        self.detector = detector
+        self.classifier = classifier
+        self.selector = selector
+        self.smoother = smoother
+        self.clock = clock
+        self._classifier_input = classifier_input
+        self._last_track = None
+
+    def process(self, frame):
+        """Run one BGR frame through both stages and return a FrameResult."""
+        t0 = self.clock()
+        dets = self.detector.detect(frame)
+        det_ms = (self.clock() - t0) * 1000
+        sel = self.selector.update(dets, frame.shape[:2])
+        cur = sel.track_id if sel is not None else None
+        if cur is not None and cur != self._last_track:  # entering a new hand
+            self.smoother.reset()
+        self._last_track = cur  # None on no-hand frames
+        if sel is not None:
+            t1 = self.clock()
+            # Crop from the raw chosen box (N6), the same geometry as the training crops.
+            x = self._classifier_input(frame, sel.raw.xyxy, self.classifier.crop_pad, self.classifier.imgsz)
+            probs_raw = self.classifier.classify(x)
+            cls_ms = (self.clock() - t1) * 1000
+            cls_ran = True
+        else:
+            probs_raw = np.eye(NUM_CLASSES, dtype=np.float32)[NOTHING_IDX]
+            cls_ms = 0.0
+            cls_ran = False
+        probs_smoothed = self.smoother.push(probs_raw)
+        idx = int(np.argmax(probs_smoothed))
+        return FrameResult(
+            selection=sel, probs_raw=probs_raw, probs_smoothed=probs_smoothed, label=CLASSES[idx],
+            conf=float(probs_smoothed[idx]), det_ms=det_ms, cls_ms=cls_ms, cls_ran=cls_ran,
+        )
