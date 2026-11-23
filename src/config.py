@@ -44,9 +44,6 @@ VAL_SPLIT = 0.15
 SEED = 42
 
 # --- Live inference parameters ---
-CONFIDENCE_THRESHOLD = 0.90
-DEBOUNCE_FRAMES = 12
-COOLDOWN_FRAMES = 15
 # Square region-of-interest for the hand, as (x, y, w, h) in frame pixels.
 ROI_BOX = (300, 100, 300, 300)
 
@@ -98,8 +95,11 @@ STICKY_RATIO = 0.50
 BOX_EMA_ALPHA = 0.60  # weight of the new box when the same track continues
 LOST_GRACE_FRAMES = 3
 
-# --- Smoothing (the commit timing values above switch with the app rewrite) ---
+# --- Smoothing + commit (applied to the smoothed probabilities) ---
 SMOOTH_WINDOW = 5
+CONFIDENCE_THRESHOLD = 0.75  # was 0.90 on raw per-frame softmax
+DEBOUNCE_FRAMES = 8  # was 12
+COOLDOWN_FRAMES = 12  # was 15
 
 # --- Camera ---
 CAMERA_INDEX = 0
