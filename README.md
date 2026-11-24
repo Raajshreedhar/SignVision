@@ -65,8 +65,8 @@ These values are in `src/config.py`.
             | (no hand: the classifier is skipped and NOTHING is fed to the smoother)
             v
  +----------------------+
- | classifier_input     |  padded square crop -> gray -> CLAHE
- | src/preprocess.py    |  -> 224x224, 3 identical channels
+ | classifier_input     |  padded square crop -> gray -> 224x224
+ | src/preprocess.py    |  -> CLAHE, 3 identical channels
  +----------------------+
             v
  +----------------------+
@@ -296,7 +296,7 @@ Every run is above `FPS_TARGET` (25). MPS timings vary from run to run on the sa
 
 ## How the parts stay consistent
 
-- **One preprocessing function.** `preprocess.classifier_input(frame, box, crop_pad, imgsz)` makes the padded square crop (side = longest box side × (1 + 2 × `CROP_PAD`), shifted to stay inside the frame), converts it to grayscale, applies CLAHE and resizes it to 224 × 224 with three identical channels. `src.cls_data` uses it for every training and test crop, and the live pipeline uses it on every frame. A test checks that `createCLAHE` and `COLOR_BGR2GRAY` appear nowhere else in `src/`.
+- **One preprocessing function.** `preprocess.classifier_input(frame, box, crop_pad, imgsz)` makes the padded square crop (side = longest box side × (1 + 2 × `CROP_PAD`), shifted to stay inside the frame), converts it to grayscale, resizes it to 224 × 224, then applies CLAHE and copies the result into three identical channels. Resizing first means the CLAHE tiles cover the same share of the hand whatever the crop's size. `src.cls_data` uses it for every training and test crop, and the live pipeline uses it on every frame. A test checks that `createCLAHE` and `COLOR_BGR2GRAY` appear nowhere else in `src/`.
 - **Class order.** `config.CLASSES` is A–Z, then SPACE, DELETE, NOTHING. The class folders are named `00_A` … `28_NOTHING`, so the sorted folder order that Ultralytics turns into class indices is the canonical order. `class_map.decode_class_names` checks the trained model's class names when the classifier is saved and again when it is loaded, and `models/letter_classifier.json` stores the list.
 - **Crops from the raw detection.** The live crop uses the detector's raw box for the selected hand, the same kind of box the training crops were made from. The smoothed box is used only for drawing and for following the hand.
 - **Geometry chain.** `data/cls/stats.json` records `crop_pad`, `cls_imgsz`, `preprocess_version` and the md5 of the detector that made the crops. `src.train_classifier` refuses a dataset that does not match the code and copies these values into `models/letter_classifier.json`. The app takes the crop settings from that file, and the app and the evaluator refuse a classifier whose `preprocess_version` differs from the code's. The app prints a WARNING when `models/hand_detector.pt` is not the detector the crops were made with.
