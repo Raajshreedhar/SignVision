@@ -8,7 +8,8 @@ around it. Hand states differ by shape as well as color:
             with the label capsule ("A 91%") at its top-left;
   held      the signing hand while briefly lost (grace frames): dashed 2 px
             accent outline, same capsule;
-  other     any other hand: thin white outline at 55 % opacity.
+  other     any other hand: thin white outline at 55 % opacity over a faint
+            dark edge, so it also shows on bright frames.
 
 With no hand in view a "No hand → NOTHING" capsule sits at the video's
 top-left. Capsules are white text on 60 % black, at least 5.7:1 over any
@@ -36,6 +37,7 @@ CAPSULE_GAP = 6  # between a box's top edge and its capsule
 NO_HAND_INSET = 16
 CAPSULE_FILL = QColor(0, 0, 0, 153)  # 60 % black
 OTHER_COLOR = QColor(255, 255, 255, 140)  # 55 % white
+OTHER_EDGE = QColor(0, 0, 0, 77)  # 30 % black under the white line, so it shows on bright frames too
 WAITING_COLOR = QColor(255, 255, 255, 153)  # 60 % white
 
 
@@ -165,8 +167,11 @@ class CameraView(QWidget):
         for item in overlay_boxes(snapshot.result):
             b = item.box
             rect = QRectF(video.left() + b.x1 * sx, video.top() + b.y1 * sy, (b.x2 - b.x1) * sx, (b.y2 - b.y1) * sy)
-            painter.setPen(self._pen(item.kind))
             painter.setBrush(Qt.BrushStyle.NoBrush)
+            if item.kind == "other":
+                painter.setPen(QPen(OTHER_EDGE, 3.5))
+                painter.drawRoundedRect(rect, BOX_RADIUS, BOX_RADIUS)
+            painter.setPen(self._pen(item.kind))
             painter.drawRoundedRect(rect, BOX_RADIUS, BOX_RADIUS)
             if item.label is not None:
                 labels.append((rect, item.label))
