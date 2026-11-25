@@ -3,12 +3,20 @@
 The autouse ``_no_webcam`` fixture replaces ``cv2.VideoCapture`` with a function
 that raises, so no automated test run can ever open the laptop camera. The live
 app is checked manually by the user.
+
+QT_QPA_PLATFORM is set to ``offscreen`` before anything else is imported, so
+the Qt tests never open a real window; the session-scoped ``qapp`` fixture
+provides the one QApplication they share.
 """
 
-from pathlib import Path
+import os
 
-import numpy as np
-import pytest
+os.environ["QT_QPA_PLATFORM"] = "offscreen"  # tests never open a real window
+
+from pathlib import Path  # noqa: E402
+
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
 
 def _webcam_disabled(*_args, **_kwargs):
@@ -21,6 +29,14 @@ def _no_webcam(monkeypatch):
     import cv2
 
     monkeypatch.setattr(cv2, "VideoCapture", _webcam_disabled)
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """The QApplication shared by every Qt test, on the offscreen platform."""
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
 
 
 @pytest.fixture
