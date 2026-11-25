@@ -201,6 +201,32 @@ def test_low_confidence_nothing_does_not_release():
     assert m.text == "AA", f"confident NOTHING did not release the latch: {m.text!r}"
 
 
+def test_delete_last_matches_the_delete_sign():
+    """The Delete button (delete_last) changes the text exactly as a committed DELETE sign does."""
+    button, sign = make_config_machine(), make_config_machine()
+    for m in (button, sign):
+        feed(m, "A", CONFIDENT, CONFIG_SETTLE)
+        feed(m, "NOTHING", CONFIDENT, CONFIG_SETTLE)
+        feed(m, "B", CONFIDENT, CONFIG_SETTLE)
+        assert m.text == "AB", f"setup failed, got {m.text!r}"
+    assert button.delete_last() == "A", f"delete_last gave {button.text!r}"
+    feed(sign, "NOTHING", CONFIDENT, CONFIG_SETTLE)
+    feed(sign, "DELETE", CONFIDENT, CONFIG_SETTLE)
+    assert sign.text == button.text == "A", f"sign {sign.text!r} != button {button.text!r}"
+
+
+def test_delete_last_leaves_commit_timing_alone():
+    """delete_last right after a commit keeps the cooldown, latch and candidate; on empty text it is harmless."""
+    m = make_config_machine()
+    feed(m, "A", CONFIDENT, DEBOUNCE_FRAMES)
+    assert m.text == "A" and m.cooldown == COOLDOWN_FRAMES
+    before = (m.cooldown, m.awaiting_nothing, m.candidate, m.stable_count)
+    assert m.delete_last() == ""
+    after = (m.cooldown, m.awaiting_nothing, m.candidate, m.stable_count)
+    assert after == before, f"delete_last changed the commit state: {before} -> {after}"
+    assert m.delete_last() == "", f"delete_last on empty text gave {m.text!r}"
+
+
 def test_app_import_is_headless():
     """`import src.app` in a fresh interpreter loads neither ultralytics nor cv2."""
     proc = subprocess.run(
@@ -224,5 +250,7 @@ if __name__ == "__main__":
     test_nothing_releases_latch_for_same_letter()
     test_different_letter_requires_nothing()
     test_low_confidence_nothing_does_not_release()
+    test_delete_last_matches_the_delete_sign()
+    test_delete_last_leaves_commit_timing_alone()
     test_app_import_is_headless()
     print("test_app_state.py: all assertions passed")

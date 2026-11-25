@@ -43,8 +43,18 @@ class CommitStateMachine:
         self.text = ""
 
     def clear(self):
-        """Reset the accumulated text (bound to the 'c' key in the app)."""
+        """Reset the accumulated text (the c key and the Clear button)."""
         self.text = ""
+
+    def delete_last(self):
+        """Remove the last character and return the text (the Delete button).
+
+        The text changes exactly as when a DELETE sign commits. Like clear(),
+        it leaves the cooldown, the candidate and the NOTHING latch alone,
+        because a button press is not a sign.
+        """
+        self.text = self.text[:-1]
+        return self.text
 
     def step(self, label, conf):
         """Advance the machine by one frame and return the current text.
