@@ -5,7 +5,7 @@ text, covering debounce, cooldown, the must-pass-through-NOTHING rule, and
 low-confidence suppression. The first six tests use small explicit timings;
 the rest use the live app's config values (CONFIDENCE_THRESHOLD,
 DEBOUNCE_FRAMES, COOLDOWN_FRAMES). The last test checks in a fresh
-interpreter that `import src.app` loads neither cv2 nor ultralytics.
+interpreter that `import src.app` loads none of cv2, ultralytics and PySide6.
 
 Run: .venv/bin/python tests/test_app_state.py
 """
@@ -228,10 +228,11 @@ def test_delete_last_leaves_commit_timing_alone():
 
 
 def test_app_import_is_headless():
-    """`import src.app` in a fresh interpreter loads neither ultralytics nor cv2."""
+    """`import src.app` in a fresh interpreter loads none of ultralytics, cv2 and PySide6 (the Qt window)."""
     proc = subprocess.run(
         [sys.executable, "-c",
-         "import sys, src.app; assert 'ultralytics' not in sys.modules and 'cv2' not in sys.modules"],
+         "import sys, src.app; assert 'ultralytics' not in sys.modules and 'cv2' not in sys.modules"
+         " and 'PySide6' not in sys.modules"],
         cwd=PROJECT_ROOT, capture_output=True, text=True,
     )
     assert proc.returncode == 0, f"headless import check failed:\n{proc.stdout}{proc.stderr}"
