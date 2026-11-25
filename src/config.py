@@ -25,6 +25,10 @@ NOTHING_IDX = CLASSES.index("NOTHING")  # 28; use this instead of a literal inde
 # --- Project paths and seed ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = PROJECT_ROOT / "models"
+# Committed (unlike models/ and data/): the CC0 hand-shape photos of the sign
+# guide, one <CLASS>.jpg per class, with their provenance in SOURCES.md.
+ASSETS_DIR = PROJECT_ROOT / "assets"
+GUIDE_DIR = ASSETS_DIR / "guide"
 SEED = 42
 
 # =============================================================================
