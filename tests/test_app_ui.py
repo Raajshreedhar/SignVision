@@ -1,97 +1,110 @@
-"""Headless checks of the live app's UI code (B10): draw_overlay states and the missing-weights exit.
+"""Headless checks of the live app's start-up and wiring: src.app.main() with the Qt window.
 
-The app itself is never run here: draw_overlay draws onto a zero frame with
-cv2.imshow patched to fail, and main() must exit before any model or camera
-is touched.
+No camera and no model is touched: build_pipeline returns a SignPipeline
+around fakes, resolve_device returns 'cpu', and cv2.VideoCapture builds a
+FakeCapture. The window runs on the offscreen Qt platform (conftest), and a
+10 s safety timer ends the event loop if a test would otherwise hang.
 """
 
+import sys
+from types import SimpleNamespace
+
 import cv2
-import numpy as np
 import pytest
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 
 from src import app, config
-from src.pipeline import FrameResult
-from src.tracking import Detection, Selection
+from src.ui.window import MainWindow
+from tests.ui_fakes import HAND, FakeCapture, FakeClassifier, FakeDetector, make_pipeline
 
-HUD = {"fps": 27.5, "det_ms": 11.2, "cls_ms": 4.3, "device": "mps"}
-BOX = Detection(440, 160, 840, 560, 0.91)
-OTHER = Detection(950, 300, 1100, 470, 0.55)
+SAFETY_MS = 10000
 
 
 @pytest.fixture
-def drawn(monkeypatch):
-    """Record every putText string and rectangle call (still drawing them); make imshow fail."""
-    texts, rects = [], []
-    real_put, real_rect = cv2.putText, cv2.rectangle
+def fake_app(qapp, tmp_path, monkeypatch):
+    """Weight files that exist, the CPU, fake models and a FakeCapture for main(); returns them to adjust."""
+    import src.yolo_env
 
-    def put(img, text, *args, **kwargs):
-        texts.append(text)
-        return real_put(img, text, *args, **kwargs)
+    for attr in ("DET_WEIGHTS", "CLS_WEIGHTS", "CLS_META"):
+        path = tmp_path / attr.lower()
+        path.write_text("not used")
+        monkeypatch.setattr(config, attr, path)
+    monkeypatch.setattr(src.yolo_env, "resolve_device", lambda pref="auto": "cpu")
+    setup = SimpleNamespace(
+        detector=FakeDetector([HAND], device="cpu"), classifier=FakeClassifier(), capture=FakeCapture(delay_s=0.01),
+        timed_out=[],
+    )
+    monkeypatch.setattr(app, "build_pipeline", lambda device: make_pipeline(setup.detector, setup.classifier))
+    monkeypatch.setattr(cv2, "VideoCapture", lambda index: setup.capture)
 
-    def rect(img, pt1, pt2, color, thickness=1, *args, **kwargs):
-        rects.append((tuple(pt1), tuple(pt2), tuple(color), thickness))
-        return real_rect(img, pt1, pt2, color, thickness, *args, **kwargs)
-
-    def no_imshow(*_args, **_kwargs):
-        raise AssertionError("draw_overlay must not call imshow")
-
-    monkeypatch.setattr(cv2, "putText", put)
-    monkeypatch.setattr(cv2, "rectangle", rect)
-    monkeypatch.setattr(cv2, "imshow", no_imshow)
-    return texts, rects
-
-
-def frame_result(selection, label, conf):
-    probs = np.eye(config.NUM_CLASSES, dtype=np.float32)[config.CLASSES.index(label)]
-    cls_ran = selection is not None
-    return FrameResult(selection, probs, probs, label, conf, 11.2, 4.3 if cls_ran else 0.0, cls_ran)
+    safety = QTimer()
+    safety.setSingleShot(True)
+    safety.timeout.connect(lambda: (setup.timed_out.append(True), QApplication.quit()))
+    safety.start(SAFETY_MS)
+    yield setup
+    safety.stop()
+    assert not setup.timed_out, "the event loop only ended through the safety timer"
 
 
-def render(result, text, hud=HUD):
-    frame = np.zeros((720, 1280, 3), np.uint8)
-    out = app.draw_overlay(frame, result, text, hud)
-    assert out.shape == (720, 1280, 3) and out.dtype == np.uint8
-    assert out.any()  # something was drawn
-    return out
+def test_main_exits_1_naming_pyside6_when_it_is_missing(fake_app, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "src.ui.window", None)  # the import fails as without PySide6
+    with pytest.raises(SystemExit) as exc:
+        app.main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "PySide6" in err and "pip install -r requirements.txt" in err
+    assert "Traceback" not in err
+    assert fake_app.capture.reads == 0
 
 
-def test_selected_box_with_other_hands(drawn):
-    texts, rects = drawn
-    out = render(frame_result(Selection(BOX, 1, False, [OTHER], BOX), "A", 0.91), "HELLO")
-    assert ((440, 160), (840, 560), app.GREEN, 3) in rects
-    assert ((950, 300), (1100, 470), app.GRAY, 1) in rects
-    assert "A 91%" in texts
-    assert "FPS 27.5  det 11.2 ms  cls 4.3 ms  mps" in texts
-    assert "Text: HELLO" in texts and "q: quit   c: clear" in texts
-    assert "No hand -> NOTHING" not in texts
-    assert tuple(out[560, 640]) == app.GREEN  # bottom edge of the selected box
-    assert tuple(out[470, 1025]) == app.GRAY  # bottom edge of the dimmed box
+def test_main_returns_1_when_the_camera_does_not_open(fake_app, capsys):
+    fake_app.capture.opened = False
+    assert app.main() == 1
+    err = capsys.readouterr().err
+    assert "could not open the webcam" in err and app.CAMERA_HINT in err
 
 
-def test_held_box_is_yellow(drawn):
-    texts, rects = drawn
-    out = render(frame_result(Selection(BOX, 1, True, [], BOX), "B", 0.8), "AB")
-    assert ((440, 160), (840, 560), app.YELLOW, 2) in rects
-    assert all(color != app.GREEN for _, _, color, _ in rects)
-    assert "B 80%" in texts and "Text: AB" in texts
-    assert tuple(out[560, 640]) == app.YELLOW
+def test_frames_flow_until_q_closes_the_window(fake_app, capsys):
+    pressed = []
+
+    def press_q():
+        windows = [w for w in QApplication.topLevelWidgets() if isinstance(w, MainWindow) and w.isVisible()]
+        pressed.append(len(windows))
+        for window in windows:
+            QTest.keyClick(window, Qt.Key.Key_Q)
+
+    press = QTimer()
+    press.setSingleShot(True)
+    press.timeout.connect(press_q)
+    press.start(500)
+    try:
+        assert app.main() == 0
+    finally:
+        press.stop()
+    assert pressed == [1]
+    assert fake_app.capture.reads > 0 and fake_app.capture.released
+    out = capsys.readouterr().out
+    assert "Using device: cpu" in out and "Session latency over" in out
 
 
-def test_no_hand_shows_the_nothing_status(drawn):
-    texts, rects = drawn
-    render(frame_result(None, "NOTHING", 1.0), "", {**HUD, "cls_ms": None})
-    assert "No hand -> NOTHING" in texts
-    assert "FPS 27.5  det 11.2 ms  cls - ms  mps" in texts
-    assert [color for _, _, color, _ in rects] == [app.BLACK]  # only the text panel, no boxes
+def test_main_returns_1_when_the_camera_stops_returning_frames(fake_app, capsys):
+    fake_app.capture.fail = True
+    assert app.main() == 1
+    assert "returned no frame 5 times in a row" in capsys.readouterr().err
+    assert fake_app.capture.released
 
 
-def test_long_text_keeps_the_newest_letters_inside_the_panel(drawn):
-    texts, _ = drawn
-    render(frame_result(None, "NOTHING", 1.0), "ABCDEFGHIJ" * 50 + "XYZ")
-    panel = [t for t in texts if t.startswith("Text: ")]
-    assert len(panel) == 1
-    assert panel[0].startswith("Text: ...") and panel[0].endswith("XYZ")
-    assert cv2.getTextSize(panel[0], cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0][0] <= 1280 - 20
+def test_a_pipeline_error_is_raised_after_the_summary(fake_app, capsys):
+    def boom(frame):
+        raise RuntimeError("boom")
+
+    fake_app.detector.detect = boom
+    with pytest.raises(RuntimeError, match="boom"):
+        app.main()
+    assert fake_app.capture.released
+    assert "No frames were processed." in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
